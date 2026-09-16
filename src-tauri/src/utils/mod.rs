@@ -119,7 +119,10 @@ pub fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
 
 pub fn app_icon_temp_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
     let icon = app.default_window_icon()?;
-    let path = std::env::temp_dir().join(format!("dsh-notification-{}.png", std::process::id()));
+    // 通知图标是一次性暂存物：可移植模式下落进应用根目录内的 tmp，不再丢进系统临时目录。
+    let dir = config::scratch_dir();
+    config::ensure_dir(&dir).ok()?;
+    let path = dir.join(format!("dsh-notification-{}.png", std::process::id()));
     let rgba = icon.rgba().to_vec();
     let img = image::RgbaImage::from_raw(icon.width(), icon.height(), rgba)?;
     img.save(&path).ok()?;

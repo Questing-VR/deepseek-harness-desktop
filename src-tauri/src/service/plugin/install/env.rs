@@ -242,18 +242,24 @@ fn github_http_host(value: &str) -> bool {
     host == "github.com" || host == "www.github.com"
 }
 
-/// 在系统临时目录创建一个空配置文件，作为隔离后的 `GIT_CONFIG_GLOBAL`。
-/// 文件名带进程号与纳秒时间戳防碰撞（0 字节文件由 OS 临时目录回收，无需主动
-/// 清理；GIT_CONFIG_GLOBAL 语义为「仅读取该文件」，空文件即无任何全局配置）。
+/// 创建一个空配置文件，作为隔离后的 `GIT_CONFIG_GLOBAL`。
+/// 暂存文件一律落在应用根目录内的 tmp（可移植模式；否则退回系统临时目录），
+/// 不再散落到系统临时目录。文件名带进程号与纳秒时间戳防碰撞（0 字节文件由
+/// OS 临时目录回收，无需主动清理；GIT_CONFIG_GLOBAL 语义为「仅读取该文件」，
+/// 空文件即无任何全局配置）。
 fn empty_git_config_file() -> Option<PathBuf> {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let path = std::env::temp_dir().join(format!(
-        "dsh-gitconfig-{}-{nanos:x}.empty",
-        std::process::id()
-    ));
+    let path = {
+        let dir = config::scratch_dir();
+        config::ensure_dir(&dir).ok()?;
+        dir.join(format!(
+            "dsh-gitconfig-{}-{nanos:x}.empty",
+            std::process::id()
+        ))
+    };
     std::fs::write(&path, "").ok()?;
     Some(path)
 }

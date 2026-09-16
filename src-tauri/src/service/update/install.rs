@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter};
 use tauri_plugin_opener::OpenerExt;
 
 use crate::config;
@@ -17,20 +17,19 @@ use crate::service::workflow;
 
 use super::meta::{fetch_latest_release, LatestRelease};
 use super::version::current_version;
-use super::{DOWNLOAD_TIMEOUT_SECS, UPDATES_DIR};
+use super::DOWNLOAD_TIMEOUT_SECS;
 
-/// 安装包目录（AppData/updates，不存在则创建）
+/// 安装包目录（数据根目录下的 `updates`，不存在则创建）
 fn updates_dir(app_handle: &AppHandle) -> Result<PathBuf, String> {
-    let dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("UPDATE_DIR: {e}"))?
-        .join(UPDATES_DIR);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("UPDATE_DIR: {e}"))?;
+    // 目录只由 config 权威推导（可移植模式为 `DSH_APP_DATA/updates`）：安装包与
+    // 核心、日志同处一个根目录，随根目录整体迁移；这里不再自己推导一遍
+    // `app_data_dir()`，否则同一份数据会有两个位置。
+    let dir = config::updates_dir(app_handle);
+    config::ensure_dir(&dir).map_err(|e| format!("UPDATE_DIR: {e}"))?;
     Ok(dir)
 }
 
-/// 安装包存放路径（AppData/updates/<asset_name>）
+/// 安装包存放路径（数据根目录/updates/<asset_name>）
 fn installer_path(app_handle: &AppHandle, asset_name: &str) -> Result<PathBuf, String> {
     Ok(updates_dir(app_handle)?.join(asset_name))
 }
@@ -336,7 +335,7 @@ fn ensure_within_updates_dir(
     Ok(())
 }
 
-/// 校验安装包路径：必须是 `AppData/updates/` 目录内的真实文件，并返回其规范化路径。
+/// 校验安装包路径：必须是 `数据根目录/updates/` 内的真实文件，并返回其规范化路径。
 ///
 /// 安全边界：任意路径、绝对/相对遍历、`..`、指向目录外的符号链接都会拒绝，
 /// 避免被伪装的 frame 或插件利用去执行任意文件。
