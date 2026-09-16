@@ -181,7 +181,7 @@ if (definitions.length > 0) {
 
 if (violations > 0) {
   console.error(`\n路径权威检查失败：${violations} 处违规。`)
-  console.error('规则见 patches/PATH-AUTHORITY.md。')
+  console.error('规则见 docs/PATH-AUTHORITY.md。')
   process.exit(1)
 }
 console.log(`路径权威检查通过：${files.length} 个 Rust 文件均未绕过单一根目录。`)

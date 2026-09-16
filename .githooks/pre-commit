@@ -1,0 +1,21 @@
+#!/bin/sh
+# Reject a commit that reintroduces a second data directory.
+#
+# Enable once per clone:
+#   git config core.hooksPath .githooks
+#
+# The check is intentionally cheap (a few hundred ms, no compiler) so it can run
+# on every commit. The full test suite belongs in CI, not here.
+if ! command -v node >/dev/null 2>&1; then
+  echo "pre-commit: node not found - skipping path-authority check" >&2
+  exit 0
+fi
+
+node scripts/check-path-authority.mjs || {
+  echo "" >&2
+  echo "pre-commit: commit rejected." >&2
+  echo "See docs/PATH-AUTHORITY.md. If the change is legitimate, update the" >&2
+  echo "rule or the allow-list in scripts/check-path-authority.mjs - do not" >&2
+  echo "bypass with --no-verify." >&2
+  exit 1
+}
