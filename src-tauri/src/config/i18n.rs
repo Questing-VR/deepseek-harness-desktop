@@ -82,6 +82,15 @@ pub fn t(key: &str) -> String {
         "menu.new_window" => ("新建窗口", "New Window"),
         "menu.new_chat" => ("新聊天", "New Chat"),
         "menu.open_folder" => ("打开文件夹", "Open Folder"),
+        // 托盘左键/菜单的「打开面板」：与「打开文件夹」不是同一动作，之前托盘直接写死
+        // 中文字面量，未走 i18n，导致 `language: "en"` 下托盘菜单仍是中文。
+        "menu.open_panel" => ("打开面板", "Open Panel"),
+        // 通知授权对话框：此前在 `desktop/notification.rs` 里写死中文，属于用户可见文案。
+        "notification.permission_title" => ("允许发送通知？", "Allow notifications?"),
+        "notification.permission_description" => (
+            "DSH 页面请求发送桌面通知。是否允许？",
+            "The DSH page is requesting permission to show desktop notifications. Allow?",
+        ),
         "menu.close" => ("关闭", "Close"),
         "menu.quit" => ("退出", "Quit"),
         "menu.documentation" => ("文档", "Documentation"),
