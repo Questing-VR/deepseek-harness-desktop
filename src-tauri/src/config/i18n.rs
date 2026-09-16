@@ -11,7 +11,11 @@ pub enum Lang {
     En,
 }
 
-static CURRENT_LANG: AtomicU8 = AtomicU8::new(0); // 0 = zh, 1 = en
+// 默认英文。`set_language` 在启动流程里只被调用一次，在它之前产生的用户可见
+// 文案（构建期、早期错误路径）只能取这个默认值；默认中文会让这些文案一律中文。
+// Windows 上更严重：set_language 曾经只在 macOS 分支被调用，于是整进程恒为中文。
+// 显式选择中文仍然生效——默认值只影响「设置尚未应用」的那一小段窗口。
+static CURRENT_LANG: AtomicU8 = AtomicU8::new(1); // 0 = zh, 1 = en
 
 pub fn set_language(lang: Lang) {
     CURRENT_LANG.store(
