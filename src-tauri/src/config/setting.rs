@@ -1,7 +1,8 @@
 use super::constants::*;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
-use tauri::{AppHandle, Emitter, Manager, Runtime};
+use tauri::{AppHandle, Emitter, Runtime};
 use tauri_plugin_store::StoreExt;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -196,6 +197,22 @@ fn store_dat_file_name() -> &'static str {
     }
 }
 
+/// Store 持久化文件的绝对路径：`<数据根目录>/<store 文件名>`。
+///
+/// store 就放在数据根目录下（与核心、日志同级），根目录整体迁移/备份时它一起走。
+/// 必须把**绝对路径**交给 store 插件：插件把相对文件名按 `BaseDirectory::AppData`
+/// 解析，可移植模式（`DSH_APP_DATA`）下会把 `.store.dat` 写回真实 `%APPDATA%`，
+/// 于是「首装探测的位置」与「实际写入的位置」被算成两处——设置写进去又读不到。
+/// 绝对路径使探测与读写永远是同一个文件。
+///
+/// 对其它模块公开的原因：窗口几何（`config::window_state`）、桌宠位置
+/// （`desktop::pet`）、待安装标记（`service::update::pending`）以及前端
+/// （经 `bridge::store_path` 命令）都要落在同一份文件上；任何一处继续用相对名，
+/// store 就会分裂成两份，值静默分叉。store 路径只允许从这里取。
+pub fn store_dat_path<R: Runtime>(app_handle: &AppHandle<R>) -> PathBuf {
+    crate::config::get_base_dir(app_handle).join(store_dat_file_name())
+}
+
 fn setting_write_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
@@ -213,23 +230,20 @@ static FIRST_INSTALL: OnceLock<bool> = OnceLock::new();
 /// 判定结果进程内缓存，之后任何时点读取都拿到本次启动的同一结论。
 pub fn detect_first_install<R: Runtime>(app_handle: &AppHandle<R>) -> bool {
     *FIRST_INSTALL.get_or_init(|| {
-        app_handle
-            .path()
-            .app_data_dir()
-            // 目录解析失败按老用户处理（保守：不做引导，回落 web 档案老行为）
-            .map(|dir| !dir.join(store_dat_file_name()).exists())
-            .unwrap_or(false)
+        // 路径由 config 权威算出（store_dat_path），探测位置与 store 的实际写入
+        // 位置因此永远一致：可移植模式与 debug 构建都不会把首装误判为「从未安装」。
+        !store_dat_path(app_handle).exists()
     })
 }
 
-/// 读取首装检测结果；尚未检测（或检测失败）时返回 `false`，保守按老用户处理。
+/// 读取首装检测结果；尚未检测时返回 `false`，保守按老用户处理。
 pub fn is_first_install() -> bool {
     FIRST_INSTALL.get().copied().unwrap_or(false)
 }
 
 fn read_store_dat_setting<R: Runtime>(app_handle: &AppHandle<R>) -> Setting {
     let store = app_handle
-        .store(store_dat_file_name())
+        .store(store_dat_path(app_handle))
         .expect("Failed to load store");
     let raw = store.get(STORE_SETTING_KEY);
     let value = raw.as_ref().and_then(|v| {
@@ -247,9 +261,13 @@ fn read_store_dat_setting<R: Runtime>(app_handle: &AppHandle<R>) -> Setting {
 }
 
 fn write_store_dat_setting(app_handle: &AppHandle, setting: &Setting) -> serde_json::Value {
-    let store = app_handle
-        .store(store_dat_file_name())
-        .expect("Failed to load store");
+    let path = store_dat_path(app_handle);
+    // 全新根目录的第一次写入：该目录还不存在，按权威显式创建（store 插件虽会自建
+    // 父目录，但这里不想把「能不能落盘」寄托在插件实现上）。建不出来就直接 panic，
+    // 与本文件其余 store 访问一致，不把失败降级成静默丢设置。
+    crate::config::ensure_dir(path.parent().expect("invalid store path"))
+        .expect("Failed to create app data directory");
+    let store = app_handle.store(path).expect("Failed to load store");
     let value = serde_json::to_value(setting).unwrap();
     store.set(STORE_SETTING_KEY, value.clone());
     store.save().expect("Failed to save store");

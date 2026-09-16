@@ -41,8 +41,6 @@ const REPO_URL: &str = "https://github.com/hairyf/deepseek-harness-desktop";
 const COPYRIGHT: &str = "Copyright © 2026 Deepseek Harness Desktop contributors";
 /// About 对话框的 "Powered by" 文案
 const POWERED_BY: &str = "DeepSeek Harness";
-/// AppData 下安装包存放目录名
-const UPDATES_DIR: &str = "updates";
 /// 安装包下载总时长上限（秒）。
 ///
 /// `reqwest` 的 `.timeout()` 是含响应体读取在内的**总**时长。安装包常达数百 MB，

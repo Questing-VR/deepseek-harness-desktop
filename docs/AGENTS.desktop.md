@@ -168,18 +168,32 @@ function ConfirmDialog(props: ConfirmDialogProps) {
 
 ## 5. 后端与 Rust 规范 (Backend Rules)
 
-1. **注释要求**：仅使用中文注释。模块头用 `//!`，函数说明用 `///`（侧重阐述原因）。
-2. **错误处理**：`Result<_, String>` 的错误信息必须包含大写前缀（如 `NODE_NOT_FOUND: ...`）。
-3. **Windows 适配**：
-* 子进程启动必须使用 `CREATE_NO_WINDOW (0x08000000)`。
-* 停止服务时使用 `taskkill /T /F` 杀掉进程树，防止 DLL 锁死。
-* 更新 PATH 后需广播 `WM_SETTINGCHANGE`。
+1. **Comments**: Chinese only; `//!` for module headers, `///` for functions (focus on "why").
+2. **Errors/Logs**: `Result<_, String>` errors need an uppercase prefix (e.g. `NODE_NOT_FOUND: ...`); log key paths.
+3. **Settings**: new `Setting` fields need `#[serde(default...)]` and export in `config/mod.rs`.
+4. **Windows**:
+   - Spawn children with `CREATE_NO_WINDOW (0x08000000)`.
+   - Kill the process tree when stopping services (`taskkill /T /F`) to avoid DLL lock on update.
+   - Broadcast `WM_SETTINGCHANGE` after writing PATH; tell users to reopen terminals.
+5. **CLI shim (`service/cli`)**:
+   - Scripts at Win `%LOCALAPPDATA%\deepseek-harness\bin`, Unix `~/.local/bin`；**可移植模式**（设置了非空 `DSH_APP_DATA`）下改为 `<root>/bin`——该模式的承诺是「用户指定的目录里什么都有」，shim 不能例外。
+   - Prefer local Node (v22.19+ / v24+; v23 unsupported), fallback to bundled Node; mind escaping (`%`→`%%`, `'`→`'\''`).
+   - Shim text must be English-only (cmd/ps1 parse by code page, Chinese breaks).
+   - pnpm shim: forward user-installed pnpm first, else bundled node `dependencies/pnpm/bin/pnpm.cjs`.
+   - Install skips when bundled installed **or** user pnpm on PATH (`Pnpm::check_installed`).
+6. **Cross-platform/Tests**: Unix-only code gets `#[cfg_attr(windows, allow(dead_code))]`; unit tests in `#[cfg(test)] mod tests`, skip gracefully when restricted.
+7. **Deps/Docs**: no heavy deps, prefer existing `windows-sys`; README minimal, en/zh synced.
 
 
-4. **CLI Shim (`service/cli`)**：
-* 脚本存放路径：Win `%LOCALAPPDATA%\deepseek-harness\bin`，Unix `~/.local/bin`。
-* 优先使用本地 Node (v22.19+ / v24+，不支持 v23)，回退到捆绑 Node。
-* Shim 文本**必须全英文**，避免编码页乱码。
+- `dsh` CLI is a Node script (`dependencies/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js`); CLI integration is **shim + PATH**. pnpm is also JS (`dependencies/pnpm/bin/pnpm.cjs`, npm tarball).
+- AppData layout（核心共用）：`runtime/node.exe`、`dependencies/dsh/`、`dependencies/pnpm/`、`.store.dat` / `.store.dev.dat`（后者为 debug）；服务日志 `logs/dsh-web.log`（debug 为 `logs/dsh-web.dev.log`）；`$DSH_HOME` 在用户主目录（release `~/.dsh`，debug `~/.dsh.dev`）。
+- **路径权威（`config::get_base_dir` 是唯一来源）**：`DSH_APP_DATA` 非空时为**可移植模式**，根目录即该变量；否则仍为平台 AppData（Windows 走 `app_data_dir()`，即 Win32 known-folder API，**忽略** `APPDATA`/`LOCALAPPDATA` 环境变量）。根目录下固定布局：`bin/`（CLI shim，仅可移植模式）、`dependencies/{dsh,pnpm,git}`、`runtime/`、`logs/`、`tmp/`、`webview/`（WebView2 用户数据）、`updates/`、`home/`（可移植模式未设 `DSH_HOME` 时的默认 `$DSH_HOME`）。
+  - **禁止**任何模块自行拼数据目录：日志底座曾自己读 `APPDATA`，与 `get_base_dir()` 的 known-folder API 分歧，导致日志和核心数据落在两个目录（重定向 `APPDATA` 时数据被劈成两半）。拿不到 `AppHandle` 时用 `config::portable_root()` / `config::logs_dir_without_handle()` / `config::scratch_dir()`。
+  - **禁止**生产代码使用 `std::env::temp_dir()`：一律 `config::scratch_dir()`（可移植模式为 `<root>/tmp`）。`#[cfg(test)]` 内不受此限制，且**必须**继续用系统临时目录，避免测试污染真实数据目录。
+  - `resource_dir()` 是安装目录，跟随安装位置，不在此列。
+- Service args: `node bin.js --profile web --host 127.0.0.1 --port <setting.port>`; `cli::ensure` runs after install.
+- 原生模块 ABI（issue #441）：预打包核心的原生模块（`fs-ext` 等 node-gyp 包）在 pkg 构建期编译，ABI 只与构建期 Node 大版本一致，而本地 Node 只按 semver 挑选。`service/core/runtime.rs::prepare_active_runtime` 在 spawn 前用 `NATIVE_PROBE_SCRIPT` 探测（require 核心里的原生包，`NODE_MODULE_VERSION` 不匹配即 ABI 失败）：先补 sharp/koffi 平台包，再改用与核心对齐的捆绑运行时（`config::set_prefer_bundled_node_runtime`，`get_node_binary_path`/`get_active_node_version`/`Nodejs::check_installed` 均受其影响，`launch.rs` 会在 prepare 后重新解析 node 路径），再 `npm rebuild`（用所选运行时自带的 npm），最后返回 `CORE_NATIVE_ABI_MISMATCH:` 诊断。CLI shim 的 node 选择仍是 semver-only。
+- pnpm store 绑定（`ERR_PNPM_UNEXPECTED_STORE`）：pnpm 只在「自己解析出的 store」与档案 `node_modules/.modules.yaml` 里的 `storeDir` 一致时才继续安装，否则直接退出 —— 用户的 pnpm 用户级/全局配置（`store-dir`）或 `npm_config_store_dir` 环境变量把 store 指到别处（典型：用户在其他分区的工程里跑过 pnpm，pnpm 把那份 store 写进全局配置）时，档案安装会**在自身完全健康的情况下**失败，报错却是「插件安装失败」。`service/plugin/install/env.rs::build_plugin_envs` 因此把档案记录的 `storeDir` 显式注入子进程的 `npm_config_store_dir`（环境变量优先级高于 `.npmrc` 与全局配置，`Command::envs` 又会覆盖继承值），`ensure_pnpm` 的 store **主版本**匹配（`profile_store_major`）只解决 pnpm 10/11 布局不兼容，解决不了「同主版本、不同路径」。`storeDir` 解析见 `install/pnpm.rs::parse_store_dir_from_modules_yaml`。
 
 
 

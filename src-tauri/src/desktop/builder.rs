@@ -73,18 +73,21 @@ pub const MAIN_WINDOW_LABEL: &str = "main";
 static EXTRA_WINDOW_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// WebView2 用户数据目录：必须与主窗口一致，否则同一进程内的多个窗口会尝试
-/// 使用不同的 User Data Folder 而失败。开发版与 release 分目录的原因见主窗口。
+/// 使用不同的 User Data Folder 而失败。
+///
+/// 目录改由路径权威给出（`<root>\webview`）：此前用 `app_local_data_dir()`，即
+/// `%LOCALAPPDATA%\<identifier>`，浏览器缓存、cookie 与 localStorage 因此落在与其余
+/// 应用数据**不同**的目录里，违反「所有状态都在用户指定的同一个根目录内」的约束。
+/// 开发版与 release 的隔离由 `config::get_base_dir` 的 dev 后缀承担，故不再需要
+/// 这里的 `EBWebView-dev` 后缀。
 #[cfg(windows)]
 fn webview_data_directory(app: &tauri::AppHandle<Wry>) -> std::path::PathBuf {
-    let mut directory = app
-        .path()
-        .app_local_data_dir()
-        .expect("Failed to resolve app local data directory");
-    directory.push(if cfg!(debug_assertions) {
-        "EBWebView-dev"
-    } else {
-        "EBWebView"
-    });
+    let directory = crate::config::webview_dir(app);
+    // 建目录失败只告警、不 panic：启动不该因为一个目录建不出来而中断，
+    // WebView2 仍可退回其默认位置。
+    if let Err(e) = crate::config::ensure_dir(&directory) {
+        log::warn!("webview data directory create skipped: {e}");
+    }
     directory
 }
 
@@ -178,12 +181,14 @@ pub fn tray<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()> {
     #[cfg(not(target_os = "macos"))]
     let icon = app.default_window_icon().unwrap().clone();
 
-    // 构建菜单
+    // 构建菜单。文案必须走 i18n：此处曾写死中文字面量，`language: "en"` 时
+    // 托盘右键菜单依然是中文，与本文件其它菜单项（见下方 `menu.open_folder`
+    // 等）不一致。
     let menu = Menu::with_items(
         app,
         &[
-            &MenuItem::with_id(app, "open", "打开面板", true, None::<&str>)?,
-            &MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?,
+            &MenuItem::with_id(app, "open", crate::config::i18n::t("menu.open_panel"), true, None::<&str>)?,
+            &MenuItem::with_id(app, "quit", crate::config::i18n::t("menu.quit"), true, None::<&str>)?,
         ],
     )?;
 
@@ -913,6 +918,7 @@ pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
         crate::bridge::runtime_ready,
         crate::bridge::get_app_config,
         crate::bridge::update_app_config,
+        crate::bridge::store_path,
         crate::bridge::get_launch_on_login,
         crate::bridge::set_launch_on_login,
         crate::bridge::get_cli_link_status,

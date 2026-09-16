@@ -3,6 +3,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::OnceLock;
 use tauri::{AppHandle, Manager, Runtime};
 
 use super::constants::*;
@@ -10,11 +11,94 @@ use super::format::get_dsh_service_url;
 use super::utils::search_node_binary;
 use super::{detect_region, Region};
 
-/// 获取当前构建专用的 AppData 基础目录。
+/// 可移植模式下的数据根目录；未设置（或为空）`DSH_APP_DATA` 时返回 `None`。
 ///
-/// debug 与 release 不能共用核心安装目录：更新或切换 debug 核心时，可能替换
-/// release 正在加载的 Node 原生模块。用户数据目录另由 `get_dsh_data_path` 隔离。
+/// 这是**唯一**的根目录权威。它刻意不依赖 `AppHandle`：日志底座在 `AppHandle`
+/// 建立之前就要确定文件路径，此前它因此自己读了一遍 `APPDATA`，从而与
+/// `get_base_dir` 的 `app_data_dir()`（Win32 known-folder API，忽略环境变量）
+/// 产生分歧——同一个应用出现两套「数据目录」，重定向 `APPDATA` 时日志落到新
+/// 位置而核心与 `.store.dat` 留在旧位置，数据被劈成两半。
+pub fn portable_root() -> Option<PathBuf> {
+    portable_root_from(env::var_os(ENV_APP_DATA_DIR))
+}
+
+/// `portable_root` 的纯函数内核：便于单测覆盖，无需改动进程级环境变量
+/// （`std::env::set_var` 在并行测试里会互相干扰）。
+fn portable_root_from(value: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    value
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            let base = PathBuf::from(value);
+            // debug 构建始终再下沉一层，保持与 release 的核心安装目录隔离。
+            if cfg!(debug_assertions) {
+                base.join(APP_DATA_DEV_DIR_NAME)
+            } else {
+                base
+            }
+        })
+}
+
+/// 平台约定的 AppData 目录（不依赖 `AppHandle`，供启动早期使用）。
+///
+/// 仅在非可移植模式作为回退；`None` 表示该平台无法解析，调用方自行降级。
+pub fn platform_app_data_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        let appdata = env::var("APPDATA").ok()?;
+        return Some(PathBuf::from(appdata).join(APP_IDENTIFIER));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let home = env::var("HOME").ok()?;
+        return Some(
+            PathBuf::from(home)
+                .join("Library")
+                .join("Application Support")
+                .join(APP_IDENTIFIER),
+        );
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let base = env::var("XDG_DATA_HOME")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| {
+                env::var("HOME")
+                    .ok()
+                    .map(|h| PathBuf::from(h).join(".local/share"))
+            })?;
+        return Some(base.join(APP_IDENTIFIER));
+    }
+    #[allow(unreachable_code)]
+    None
+}
+
+/// 进程级暂存目录，供**拿不到 `AppHandle`** 的调用点使用。
+///
+/// 可移植模式下为 `<root>/tmp`，否则退回系统临时目录（保持上游行为）。
+/// 用 `OnceLock` 缓存：暂存目录在进程生命周期内不应变化，而每次调用重算会在
+/// 解压/原子安装等热路径上反复触碰环境变量。
+pub fn scratch_dir() -> PathBuf {
+    static SCRATCH: OnceLock<PathBuf> = OnceLock::new();
+    SCRATCH
+        .get_or_init(|| {
+            portable_root()
+                .map(|root| root.join(DIR_NAME_TMP))
+                .unwrap_or_else(env::temp_dir)
+        })
+        .clone()
+}
+
+/// 获取当前构建专用的 AppData 基础目录——所有写入路径的唯一来源。
+///
+/// 解析顺序：可移植模式（`DSH_APP_DATA`）> 平台 AppData（known-folder API）。
+/// debug 与 release 不共用目录：更新或切换 debug 核心时可能替换 release 正在
+/// 加载的 Node 原生模块。用户数据目录另由 `get_dsh_data_path` 隔离。
 pub fn get_base_dir<R: Runtime>(app_handle: &AppHandle<R>) -> PathBuf {
+    if let Some(root) = portable_root() {
+        return root;
+    }
     let base = app_handle
         .path()
         .app_data_dir()
@@ -24,6 +108,43 @@ pub fn get_base_dir<R: Runtime>(app_handle: &AppHandle<R>) -> PathBuf {
     } else {
         base
     }
+}
+
+/// 目录不存在即递归创建。各子目录惰性创建，全新根目录因此能干净落地，
+/// 而不是要求用户预先建好一堆目录。
+pub fn ensure_dir(path: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(path)
+}
+
+/// 日志目录（`<root>/logs`）
+pub fn logs_dir<R: Runtime>(app_handle: &AppHandle<R>) -> PathBuf {
+    get_base_dir(app_handle).join(DIR_NAME_LOGS)
+}
+
+/// 解析 `AppHandle` 的日志目录；无 `AppHandle` 时用 `portable_root`/平台回退。
+pub fn logs_dir_without_handle() -> Option<PathBuf> {
+    portable_root()
+        .or_else(platform_app_data_dir)
+        .map(|root| root.join(DIR_NAME_LOGS))
+}
+
+/// CLI shim 目录。仅可移植模式返回 `Some(<root>/bin)`：该模式下用户明确要求
+/// 一切数据都在指定目录内，shim 不应再写到 `%LOCALAPPDATA%`。
+pub fn portable_bin_dir() -> Option<PathBuf> {
+    portable_root().map(|root| root.join(DIR_NAME_BIN))
+}
+
+/// WebView2 用户数据目录（`<root>/webview`）。
+///
+/// 此前用 `app_local_data_dir()`，即 `%LOCALAPPDATA%\<id>`，使得浏览器缓存、
+/// cookie 与 localStorage 落在与其余数据不同的目录下。
+pub fn webview_dir<R: Runtime>(app_handle: &AppHandle<R>) -> PathBuf {
+    get_base_dir(app_handle).join(DIR_NAME_WEBVIEW)
+}
+
+/// 桌面端更新包目录（`<root>/updates`）
+pub fn updates_dir<R: Runtime>(app_handle: &AppHandle<R>) -> PathBuf {
+    get_base_dir(app_handle).join(DIR_NAME_UPDATES)
 }
 
 /// Node.js 官方/镜像下载前缀：国内走 npmmirror，其他直连 nodejs.org
@@ -479,6 +600,15 @@ pub fn get_dsh_data_path<R: Runtime>(_app_handle: &AppHandle<R>) -> PathBuf {
         }
         DSH_HOME_DIR_NAME
     };
+    // 可移植模式：`$DSH_HOME` 的默认位置也收进根目录，否则未设置 `DSH_HOME`
+    // 时会另在用户主目录写一份，用户指定了单一目录却仍然多出一处。
+    if let Some(root) = portable_root() {
+        return if cfg!(debug_assertions) {
+            root.join(DSH_HOME_DEV_DIR_NAME)
+        } else {
+            root.join(DIR_NAME_HOME)
+        };
+    }
     user_home_dir()
         .map(|home| home.join(dir_name))
         .unwrap_or_else(|| PathBuf::from(dir_name))
@@ -494,7 +624,8 @@ pub fn get_service_log_path<R: Runtime>(app_handle: &AppHandle<R>) -> PathBuf {
     } else {
         "dsh-web.log"
     };
-    get_base_dir(app_handle).join("logs").join(name)
+    // 走 `logs_dir` 而不是自己拼 "logs"：目录名只有一处定义，避免再次分叉。
+    logs_dir(app_handle).join(name)
 }
 
 /// 捆绑的 Node.js 版本号
@@ -625,6 +756,51 @@ mod tests {
             .expect("system time after epoch")
             .as_nanos();
         std::env::temp_dir().join(format!("dsh-runtime-{name}-{}-{nonce}", std::process::id()))
+    }
+
+    /// 未设置、或设置为空字符串时都不得进入可移植模式：空值会让根目录退化成
+    /// 相对路径，反而把数据写进进程当前工作目录。
+    #[test]
+    fn portable_root_ignores_unset_and_empty() {
+        assert!(portable_root_from(None).is_none());
+        assert!(portable_root_from(Some(std::ffi::OsString::from(""))).is_none());
+    }
+
+    /// 设置后必须原样采用该目录；debug 构建再下沉一层，保持与 release 的隔离。
+    #[test]
+    fn portable_root_adopts_env_value() {
+        let root = portable_root_from(Some(std::ffi::OsString::from(r"D:\dsh-root")))
+            .expect("portable root");
+        let expected = if cfg!(debug_assertions) {
+            PathBuf::from(r"D:\dsh-root").join(APP_DATA_DEV_DIR_NAME)
+        } else {
+            PathBuf::from(r"D:\dsh-root")
+        };
+        assert_eq!(root, expected);
+    }
+
+    /// 全新根目录必须能一次建出多层，否则首次启动会因为缺子目录而失败。
+    #[test]
+    fn ensure_dir_creates_nested_directories() {
+        let base = unique_runtime_test_dir("ensure-dir");
+        let nested = base.join("a").join("b").join("c");
+        ensure_dir(&nested).expect("create nested dirs");
+        assert!(nested.is_dir());
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// `APP_IDENTIFIER` 必须与 `tauri.conf.json` 的 identifier 一致。
+    ///
+    /// 日志底座曾经自己抄了一份该字面量：两份一旦漂移，同一个应用就会各自解析出
+    /// 不同的数据目录（一个走 known-folder API，一个读环境变量），数据被劈成两半。
+    #[test]
+    fn app_identifier_matches_tauri_config() {
+        let raw = fs::read_to_string("tauri.conf.json").expect("read tauri.conf.json");
+        let config: serde_json::Value = serde_json::from_str(&raw).expect("parse tauri.conf.json");
+        assert_eq!(
+            config.get("identifier").and_then(|value| value.as_str()),
+            Some(APP_IDENTIFIER)
+        );
     }
 
     /// 完整 Git 安装版把 HTTPS helper 直接放在 exec path 时仍应识别。

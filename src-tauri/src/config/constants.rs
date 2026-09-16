@@ -64,6 +64,37 @@ pub const DSH_HOME_DEV_DIR_NAME: &str = ".dsh.dev";
 /// 核心不应与 release 共用，否则开发版更新/切换核心会替换正在运行的生产文件。
 pub const APP_DATA_DEV_DIR_NAME: &str = "dev";
 
+/// 环境变量：覆盖桌面端自身的数据目录（见 `get_base_dir`）。
+///
+/// 与 `$DSH_HOME`（见 `get_dsh_data_path`）同构：设置后，桌面端的 AppData
+/// 基础目录——Node 运行时、Harness 核心、pnpm、MinGit、日志与 `.store.dat`——
+/// 整体落到该目录，使安装可以放在任意卷/目录并整目录备份。
+///
+/// 必需的原因：`app_data_dir()` 走 Win32 known-folder API
+/// （SHGetKnownFolderPath），它会忽略 `APPDATA` / `LOCALAPPDATA`，因此
+/// 仅靠环境变量无法改变该目录；而 `$DSH_HOME` 早就有同构覆盖。
+pub const ENV_APP_DATA_DIR: &str = "DSH_APP_DATA";
+
+/// 应用标识符（= `tauri.conf.json` 的 `identifier`）。
+///
+/// 集中定义：日志底座在 `AppHandle` 建立前就要拼出数据目录，此前它自己抄了
+/// 一份字面量，与 Tauri 解析出的目录各自独立演化。
+pub const APP_IDENTIFIER: &str = "io.github.hairyf.deepseek-harness-desktop";
+
+/// 数据根目录下的子目录名——**所有**写入路径都由根目录加这些名字派生。
+///
+/// 集中定义的原因：此前「CLI shim 在 `%LOCALAPPDATA%`」「日志按 `APPDATA%`
+/// 环境变量算」「WebView2 在 `%LOCALAPPDATA%\<id>`」「临时文件在 `%TEMP%`」
+/// 各写各的，同一个应用的数据散落在四五个位置，既无法整目录备份，也容易在
+/// 误删某个目录时损坏整个安装。改为单一权威后，根目录在哪，全部数据就在哪。
+pub const DIR_NAME_BIN: &str = "bin";
+pub const DIR_NAME_LOGS: &str = "logs";
+pub const DIR_NAME_TMP: &str = "tmp";
+pub const DIR_NAME_WEBVIEW: &str = "webview";
+pub const DIR_NAME_UPDATES: &str = "updates";
+/// 可移植模式下未设置 `DSH_HOME` 时的默认 $DSH_HOME（`<root>/home`）。
+pub const DIR_NAME_HOME: &str = "home";
+
 /// 安装目录与 CLI 入口（相对安装目录）
 pub const DSH_CORE_DIR: &str = "dsh";
 pub const DSH_ENTRY_RELATIVE: &str = "node_modules/@deepseek-ai/dsh/lib/bin.js";

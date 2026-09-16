@@ -13,6 +13,20 @@ pub async fn get_app_config(app_handle: AppHandle) -> Result<config::Setting, St
     Ok(config::get_store_dat_setting(&app_handle))
 }
 
+/// 桌面端 store 持久化文件的绝对路径（`<数据根目录>/.store.dat`，debug 为 `.store.dev.dat`）。
+///
+/// 前端 `tauri-plugin-store` 只能拿路径字符串调 `Store.load`，而传相对名时插件会按
+/// `BaseDirectory::AppData` 解析到 `%APPDATA%\<identifier>`——正是可移植模式
+/// （`DSH_APP_DATA`）要绕开的目录：Rust 写 `<root>/.store.dat`、前端写
+/// `%APPDATA%\<id>\.store.dat`，`zoom_factor` 等值会在两份文件里静默分叉。
+/// 路径权威只在 Rust 侧（`config::setting::store_dat_path`），故经此命令交给前端。
+#[tauri::command]
+pub fn store_path(app_handle: AppHandle) -> String {
+    config::setting::store_dat_path(&app_handle)
+        .to_string_lossy()
+        .into_owned()
+}
+
 /// 更新桌面端配置
 ///
 /// `close_action` 对应前端的 camelCase `closeAction`，命中关闭按钮时的行为

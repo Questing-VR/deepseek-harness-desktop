@@ -14,17 +14,8 @@ use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 use tauri_plugin_store::StoreExt;
 
-use crate::config::{STORE_DAT_DEV_FILE, STORE_DAT_FILE, STORE_PENDING_INSTALLER_KEY};
+use crate::config::{setting, STORE_PENDING_INSTALLER_KEY};
 use crate::service::workflow;
-
-/// Store 持久化文件名：debug 构建与生产隔离，语义同 `config::setting`。
-fn store_dat_file_name() -> &'static str {
-    if cfg!(debug_assertions) {
-        STORE_DAT_DEV_FILE
-    } else {
-        STORE_DAT_FILE
-    }
-}
 
 /// 「待安装」标记：安装包路径 + 它对应的版本号。
 ///
@@ -38,8 +29,11 @@ struct PendingInstaller {
 }
 
 /// 读取「待安装」标记；无标记、内容非法或路径为空时返回 `None`。
+///
+/// store 路径取 `config::setting::store_dat_path`（绝对路径）：标记与 `setting` 键
+/// 必须同一份文件，相对名会被 store 插件解析到 `%APPDATA%\<id>`，可移植模式下分裂。
 fn get(app_handle: &AppHandle) -> Option<PendingInstaller> {
-    let store = app_handle.store(store_dat_file_name()).ok()?;
+    let store = app_handle.store(setting::store_dat_path(app_handle)).ok()?;
     let value = store.get(STORE_PENDING_INSTALLER_KEY)?;
     let pending: PendingInstaller = serde_json::from_value(value).ok()?;
     if pending.path.is_empty() {
@@ -53,7 +47,7 @@ fn get(app_handle: &AppHandle) -> Option<PendingInstaller> {
 /// 失败只告警不阻断：标记只是「退出时自动更新」的辅助，丢掉它的降级态是用户
 /// 需要在对话框里手动点一次「打开安装包」，不该让下载/打开流程随之失败。
 pub(super) fn set(app_handle: &AppHandle, pending: Option<(&Path, &str)>) {
-    let Ok(store) = app_handle.store(store_dat_file_name()) else {
+    let Ok(store) = app_handle.store(setting::store_dat_path(app_handle)) else {
         log::warn!("Failed to load store for pending installer marker");
         return;
     };
