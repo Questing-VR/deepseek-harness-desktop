@@ -1,0 +1,23 @@
+name: path-authority
+
+# Enforces the single-root contract on every push and pull request.
+#
+# This job exists because the bug it guards against is invisible: two modules
+# each resolving "the data directory" a different way still compiles, still runs,
+# and only shows up as state split across two drives. A test suite cannot catch
+# it; a static rule can.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Path authority must remain single-sourced
+        run: node scripts/check-path-authority.mjs
