@@ -969,6 +969,18 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
             // 创建 store 文件，判定晚于它们会把首装误判为升级（见
             // config::detect_first_install 的时序说明）。
             crate::config::detect_first_install(&app_handle);
+            // 后端 i18n 的语言必须在**任何**用户可见文案生成之前设定，而且在所有
+            // 平台都要设。此前只有 macOS 的 install_macos_menu 会调用 set_language，
+            // Windows 上 CURRENT_LANG 永远停在默认的 Zh（见 config/i18n.rs 的
+            // AtomicU8 初值），于是 i18n::t() 一律返回中文——托盘菜单、后端错误
+            // 文案全都与 language 设置无关。托盘在下一行构建，所以必须放在这里。
+            {
+                let lang_setting = crate::config::get_store_dat_setting(&app_handle);
+                crate::config::i18n::set_language(match lang_setting.language.as_str() {
+                    "en" | "en-US" => crate::config::i18n::Lang::En,
+                    _ => crate::config::i18n::Lang::Zh,
+                });
+            }
             build_main_window(&app_handle)?;
             #[cfg(target_os = "macos")]
             install_macos_menu(&app_handle)?;
