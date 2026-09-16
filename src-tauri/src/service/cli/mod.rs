@@ -3,12 +3,19 @@
 //! `dsh` 与捆绑的 `pnpm` 都是 Node 脚本（`lib/bin.js` / `bin/pnpm.cjs`），并非原生
 //! 可执行文件，因此生成包装脚本（shim）并注册到用户 PATH：
 //!
-//! - Windows：`%LOCALAPPDATA%\deepseek-harness\bin\dsh.cmd` / `dsh.ps1` 与
+//! - 可移植模式（设置了 `DSH_APP_DATA`）：shim 目录改为数据根目录内的
+//!   `<根目录>\bin`（Windows）/ `<根目录>/bin`（macOS/Linux），由
+//!   `crate::config::portable_bin_dir()` 给出，不再落到平台默认位置；
+//! - Windows 默认：`%LOCALAPPDATA%\deepseek-harness\bin\dsh.cmd` / `dsh.ps1` 与
 //!   `pnpm.cmd` / `pnpm.ps1`，通过 `HKCU\Environment\Path` 注册并广播
 //!   `WM_SETTINGCHANGE`；
-//! - macOS/Linux：`~/.local/bin/dsh` 与 `~/.local/bin/pnpm`，必要时向
+//! - macOS/Linux 默认：`~/.local/bin/dsh` 与 `~/.local/bin/pnpm`，必要时向
 //!   `~/.zshrc` / `~/.bashrc` 幂等更新 PATH 导出块（只动自身标记块、保留
 //!   用户其余配置；写入前备份临时文件 + rename，失败自动回滚）。
+//!
+//! 两种模式共用同一块标记与同一套开关（`cli_link_enabled`）：切到可移植模式后
+//! 注入块里的导出路径会整体换成数据根目录内的 bin，用户 PATH 中残留的旧平台
+//! 默认目录条目在下次注册时被摘除，不会出现新旧两个 shim 目录同时生效。
 //!
 //! shim 运行时优先使用本地版本兼容的 node（校验规则与
 //! [`crate::config::is_supported_node_version`] 一致），否则回退到捆绑运行时；

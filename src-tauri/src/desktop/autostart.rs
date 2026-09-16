@@ -2,9 +2,16 @@
 //!
 //! 跨平台注册交给 Tauri 官方插件；Windows 只补齐其底层库对缺失注册表键和
 //! 重复禁用不幂等的问题，并清理由任务管理器维护的残留状态。
+//!
+//! 可移植模式（`DSH_APP_DATA`）下不注册登录启动：官方插件的落点是共享用户状态
+//! （Windows `HKCU\...\Run`、macOS `~/Library/LaunchAgents`、Linux
+//! `~/.config/autostart`），它不接受目标路径参数，无法指回数据根目录内部；
+//! 而用户设置 `DSH_APP_DATA` 就意味着「一切都在这个目录里」，因此这里整体让位。
 
 use tauri::{AppHandle, Runtime};
 use tauri_plugin_autostart::ManagerExt;
+
+use crate::config;
 
 #[cfg(windows)]
 use std::io::ErrorKind;
@@ -69,6 +76,12 @@ fn remove_windows_startup_approval(name: &str) -> Result<(), String> {
 
 /// 从系统读取当前登录启动状态，允许用户在系统设置中直接修改它。
 pub fn is_enabled<R: Runtime>(app_handle: &AppHandle<R>) -> Result<bool, String> {
+    // 可移植模式下本应用不会（也无法）在数据根目录之外注册启动项，真实状态恒为
+    // 「未启用」；这里直接回答，避免读一次共享的注册表/用户配置目录。
+    if config::portable_root().is_some() {
+        return Ok(false);
+    }
+
     #[cfg(windows)]
     if !windows_run_entry_exists(app_name())? {
         return Ok(false);
@@ -82,6 +95,20 @@ pub fn is_enabled<R: Runtime>(app_handle: &AppHandle<R>) -> Result<bool, String>
 
 /// 写入登录启动状态并复查结果，禁用操作保持幂等。
 pub fn set_enabled<R: Runtime>(app_handle: &AppHandle<R>, enabled: bool) -> Result<bool, String> {
+    // 可移植模式下只允许「关闭」：禁用路径保持幂等（用于清理切换模式前留下的
+    // 启动项），启用则显式失败——官方插件的落点在数据根目录之外，静默忽略会让
+    // 用户以为已经生效，而失败又必须说清原因而不是伪造一个成功状态。
+    if config::portable_root().is_some() {
+        if enabled {
+            return Err(
+                "AUTOSTART_PORTABLE_UNSUPPORTED: login autostart is unavailable in portable mode \
+                 (DSH_APP_DATA); it would write outside the data root"
+                    .to_string(),
+            );
+        }
+        return Ok(false);
+    }
+
     let manager = app_handle.autolaunch();
     if enabled {
         #[cfg(windows)]

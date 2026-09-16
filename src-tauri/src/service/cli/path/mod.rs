@@ -12,6 +12,8 @@ use std::fs;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
 
+use crate::config;
+
 #[cfg(windows)]
 use super::shim::SHIM_CMD_NAME;
 #[cfg(unix)]
@@ -44,14 +46,26 @@ const CLI_ROOT_DIR_NAME: &str = "deepseek-harness";
 #[cfg(unix)]
 const UNIX_BIN_DIR: &str = ".local/bin";
 
+/// Windows 下 dev 构建的 shim 根目录名后缀（`%LOCALAPPDATA%\deepseek-harness-dev\bin`），
+/// 只用于识别/清理切换构建或可移植模式前留下的 PATH 条目
+#[cfg(windows)]
+const CLI_ROOT_DEV_DIR_NAME_SUFFIX: &str = "-dev";
+
 // ---------------------------------------------------------------------------
 // 路径计算
 // ---------------------------------------------------------------------------
 
 /// bin 目录：
-/// - Windows：`%LOCALAPPDATA%\deepseek-harness\bin`（用户级、不随应用数据目录变动）
-/// - Unix：`~/.local/bin`（XDG 约定，通常已在 PATH 中）
+/// - 可移植模式（`DSH_APP_DATA`）：`<根目录>/bin`——用户已声明「所有数据都在这个
+///   目录里」，shim 不能再落到 `%LOCALAPPDATA%` / `~/.local/bin`；
+/// - Windows 默认：`%LOCALAPPDATA%\deepseek-harness\bin`（用户级、不随应用数据目录变动）
+/// - Unix 默认：`~/.local/bin`（XDG 约定，通常已在 PATH 中）
 pub fn get_bin_dir(app_handle: &AppHandle) -> PathBuf {
+    // 可移植模式优先于平台默认位置；debug 的额外下沉已由 `portable_root()` 完成，
+    // 这里不再叠加一层，保证与 core/plugin 解析出的 bin 目录完全一致。
+    if let Some(portable) = config::portable_bin_dir() {
+        return portable;
+    }
     #[cfg(windows)]
     {
         std::env::var_os("LOCALAPPDATA")
@@ -83,6 +97,58 @@ pub fn get_bin_dir(app_handle: &AppHandle) -> PathBuf {
             home.join(UNIX_BIN_DIR)
         }
     }
+}
+
+/// 旧平台默认 bin 目录（可移植模式下的清理目标）：
+/// Windows `%LOCALAPPDATA%\<shim 根目录名>\bin`，Unix `~/.local/bin`。
+///
+/// 可移植模式之前 shim 写在这里，若不做清理，用户 PATH 中会同时存在本应用新旧
+/// 两个条目，旧目录排在前面时终端会执行到上一次的 shim（内容可能仍烘焙着旧的
+/// `$DSH_HOME`），形成难以排查的「命令行行为不一致」。
+pub(super) fn legacy_bin_dir(app_handle: &AppHandle) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let dir_name = if cfg!(debug_assertions) {
+            format!("{CLI_ROOT_DIR_NAME}{CLI_ROOT_DEV_DIR_NAME_SUFFIX}")
+        } else {
+            CLI_ROOT_DIR_NAME.to_string()
+        };
+        std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .or_else(|| {
+                app_handle
+                    .path()
+                    .local_data_dir()
+                    .ok()
+                    .and_then(|d| d.parent().map(|p| p.to_path_buf()))
+            })
+            .unwrap_or_else(std::env::temp_dir)
+            .join(dir_name)
+            .join("bin")
+    }
+    #[cfg(not(windows))]
+    {
+        let home = app_handle
+            .path()
+            .home_dir()
+            .unwrap_or_else(|_| PathBuf::from("."));
+        if cfg!(debug_assertions) {
+            home.join(".local/bin/dev")
+        } else {
+            home.join(UNIX_BIN_DIR)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 路径注册辅助
+// ---------------------------------------------------------------------------
+
+/// 写 shim / 改 PATH 前先建好 bin 目录：可移植模式下 `<根目录>/bin` 全新出现，
+/// 惰性创建保证第一次启用命令行集成就能落地。
+fn ensure_bin_dir(bin_dir: &std::path::Path) -> Result<(), String> {
+    config::ensure_dir(bin_dir)
+        .map_err(|e| format!("SHIM_MKDIR_FAILED: create bin dir failed: {e}"))
 }
 
 /// 主 shim 文件路径（状态展示用）
@@ -145,6 +211,8 @@ pub fn register_path(app_handle: &AppHandle) -> Result<(), String> {
     #[cfg(windows)]
     {
         let bin_dir = get_bin_dir(app_handle);
+        // 可移植模式下 bin 位于数据根目录内，可能尚未创建
+        ensure_bin_dir(&bin_dir)?;
         let bin_str = bin_dir
             .to_str()
             .ok_or_else(|| "PATH_BIN_DIR_NOT_UTF8: bin dir is not valid UTF-8".to_string())?;
@@ -153,6 +221,10 @@ pub fn register_path(app_handle: &AppHandle) -> Result<(), String> {
         // Some("") 才按空串处理。
         let current = read_user_path()
             .ok_or_else(|| "PATH_REG_READ_FAILED: failed to read user PATH".to_string())?;
+        // 可移植模式：先摘掉旧平台默认 bin 目录的条目，避免新旧两个 shim 目录同时
+        // 留在 PATH 中（旧条目排在前面时终端会跑到上一次的 shim）。仅当旧目录确实
+        // 与新目录不同才处理，平台默认模式下两者相同，因此该分支为 no-op。
+        let current = remove_legacy_path_entry(&legacy_bin_dir(app_handle), bin_str, current);
         let new_value = if current.trim().is_empty() {
             bin_str.to_string()
         } else {
@@ -164,9 +236,34 @@ pub fn register_path(app_handle: &AppHandle) -> Result<(), String> {
     }
     #[cfg(not(windows))]
     {
+        // 可移植模式下 rc 注入块里的导出路径指向 `<根目录>/bin`，目录必须先存在
+        ensure_bin_dir(&get_bin_dir(app_handle))?;
         inject_shell_rc(app_handle)?;
     }
     Ok(())
+}
+
+/// 移除仍留在用户 PATH 中的旧平台默认 bin 目录条目，返回清理后的 PATH 值。
+///
+/// 旧目录即当前 bin 目录（平台默认模式）、或 PATH 中本就没有旧条目时原样返回，
+/// 保证非可移植模式下行为与改动前完全一致。
+#[cfg(windows)]
+fn remove_legacy_path_entry(
+    legacy: &std::path::Path,
+    bin_str: &str,
+    current: String,
+) -> String {
+    let Some(legacy_str) = legacy.to_str() else {
+        return current;
+    };
+    if legacy_str == bin_str || !path_contains_token(&current, legacy_str) {
+        return current;
+    }
+    let cleaned = remove_path_token(&current, legacy_str);
+    if cleaned != current {
+        log::info!("Removed stale dsh bin dir from user PATH: {legacy_str}");
+    }
+    cleaned
 }
 
 /// 从用户 PATH 中移除 bin 目录（幂等）

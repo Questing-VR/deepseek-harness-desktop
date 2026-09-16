@@ -183,10 +183,13 @@ pub fn enable_notification_permissions(
     log::info!("[notification] registering WebView2 notification handlers");
 
     fn ask_notification_permission(parent: &tauri::WebviewWindow<tauri::Wry>) -> bool {
+        // 用户可见文案必须走 i18n：此处曾写死中文，英文语言设置下依然弹中文。
+        let title = crate::config::i18n::t("notification.permission_title");
+        let description = crate::config::i18n::t("notification.permission_description");
         MessageDialog::new()
             .set_parent(parent)
-            .set_title("允许发送通知？")
-            .set_description("DSH 页面请求发送桌面通知。是否允许？")
+            .set_title(title)
+            .set_description(description)
             .set_buttons(MessageButtons::YesNo)
             .show()
             == MessageDialogResult::Yes

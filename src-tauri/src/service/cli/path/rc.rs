@@ -1,5 +1,9 @@
-//! Unix shell rc 幂等块更新：向 `~/.zshrc` / `~/.bashrc` 注入/移除
-//! `~/.local/bin` 的 PATH 导出块（备份 + 失败回滚）。
+//! Unix shell rc 幂等块更新：向 `~/.zshrc` / `~/.bashrc` 注入/移除 shim 目录的
+//! PATH 导出块（备份 + 失败回滚）。
+//!
+//! 导出路径取自 [`super::get_bin_dir`]：可移植模式（`DSH_APP_DATA`）下为
+//! `<数据根目录>/bin`（不再是 `~/.local/bin`），并把它放在 `$PATH` 最前，避免
+//! 旧条目排在前面时终端跑到上一次的 shim。
 //!
 //! 注入/移除（依赖 `AppHandle::path()`）仅 Unix 编译；纯文本操作辅助（upsert /
 //! strip / 备份写回）在全部平台编译（Windows 上按 dead_code 允许，供测试覆盖）。
@@ -18,18 +22,25 @@ pub(super) const RC_MARK_END: &str = "# <<< deepseek-harness dsh <<<";
 #[cfg_attr(windows, allow(dead_code))]
 pub(super) const RC_FILES: [&str; 2] = [".zshrc", ".bashrc"];
 
-/// Unix：向 `~/.zshrc` / `~/.bashrc` 幂等注入 `~/.local/bin` 的 PATH 导出。
+/// Unix：向 `~/.zshrc` / `~/.bashrc` 幂等注入 shim 目录的 PATH 导出。
 ///
 /// 只更新自身标记块：读取原文件 → 移除旧块 → 末尾追加新块；仅当文件不存在时
 /// 才新建。读失败（非"不存在"）直接报错退出，绝不把"读不到"当作空文件去
 /// 全量覆盖用户配置；写入前先备份，写失败自动回滚（见 `write_rc_with_backup`）。
+///
+/// 块内容由 [`super::get_bin_dir`] 决定，因此可移植模式与平台默认模式共用同一
+/// 标记：旧块（导出 `~/.local/bin`）会被整体替换成数据根目录内的新路径。
 #[cfg(not(windows))]
 pub(super) fn inject_shell_rc(app_handle: &AppHandle) -> Result<(), String> {
     let home = app_handle
         .path()
         .home_dir()
         .map_err(|_| "RC_HOME_RESOLVE_FAILED: failed to resolve home directory".to_string())?;
-    let block = format!("{RC_MARK_START}\nexport PATH=\"$HOME/.local/bin:$PATH\"\n{RC_MARK_END}\n");
+    let bin_dir = super::get_bin_dir(app_handle);
+    let block = format!(
+        "{RC_MARK_START}\nexport PATH=\"{}:$PATH\"\n{RC_MARK_END}\n",
+        super::super::shim::escape_path_sh(&bin_dir)
+    );
 
     for name in RC_FILES {
         let rc_path = home.join(name);
