@@ -23,7 +23,11 @@ param(
   [switch]$Build
 )
 
-$ErrorActionPreference = 'Stop'
+# Continue, NOT Stop. git, cargo and pnpm all write progress to stderr, and with
+# Stop PowerShell turns a native command's stderr into a TERMINATING error — so a
+# successful `git fetch` aborted this script entirely. Every native call below is
+# followed by an explicit $LASTEXITCODE check, so real failures are still caught.
+$ErrorActionPreference = 'Continue'
 $Repo = Split-Path -Parent $PSScriptRoot
 $Ws   = Split-Path -Parent (Split-Path -Parent $Repo)   # ...\DSH Kawaii creator
 $Root = Split-Path -Parent $Ws                          # ...\DSH Kawaii
