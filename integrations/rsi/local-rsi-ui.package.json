@@ -1,0 +1,7 @@
+{
+  "name":"@local/rsi-ui","version":"0.1.0","private":true,"type":"module",
+  "main":"index.mjs",
+  "exports":{".":"./index.mjs","./client":"./client.js","./cordis.patch.yml":"./cordis.patch.yml","./package.json":"./package.json"},
+  "dsh":{"client":{"inject":["@deepseek-ai/dsh-client-ui-sidebar","@deepseek-ai/dsh-client-ui-renderer"],"platform":"web"},
+    "bundle":{"patch":"./cordis.patch.yml"}}
+}

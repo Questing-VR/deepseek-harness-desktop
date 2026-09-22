@@ -1,0 +1,15 @@
+# @local/rsi-ui bundle patch.
+#
+# The reference plugin shipped only `dsh.client` in its package.json, with no
+# `dsh.bundle`. That is enough for a loader that mounts client-only extensions by
+# inference, but this harness's loader requires a bundle layer to name the entry:
+# without it the bundle is rejected with
+#   "dsh: profile bundle "@local/rsi-ui" declares no dsh.bundle in its package.json"
+# and the Memory & learning panel never appears. This row supplies that layer.
+#
+# Row shape copied from a working client plugin in this harness (dsh-tauri-ui):
+# the id is the loader entry, the name is the package to resolve from the
+# profile's node_modules.
+- insert:
+    - id: rsi-ui
+      name: '@local/rsi-ui'
