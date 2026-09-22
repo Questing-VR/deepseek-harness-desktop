@@ -1,0 +1,9 @@
+# @local/rsi-tools bundle patch.
+#
+# Mounts the reference's tool plugin (the eighteen rsi_* tools: status,
+# calculate, decide, learn, evolve, feedback, the memory family, graph link,
+# unlearning request, file rewind and chat rewind) as a host plugin of this
+# harness. Row shape matches the working bundles in this profile.
+- insert:
+    - id: rsi-tools
+      name: '@local/rsi-tools'
