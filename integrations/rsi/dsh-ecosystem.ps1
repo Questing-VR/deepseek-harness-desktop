@@ -430,10 +430,29 @@ function Set-EcoEnv {
   # with ERR_PNPM_UNEXPECTED_STORE when the store it resolves differs from the
   # `storeDir` baked into that profile's node_modules/.modules.yaml. The profiles
   # record `<caches>\pnpm\store` (that is also PNPM_HOME's store), NOT
-  # `<caches>\pnpm-store` - a second, older store from the v10 layout. Setting
-  # this to the wrong one is what made every marketplace update fail with
-  # "Unexpected store location" and roll the build back.
+  # `<caches>\pnpm-store` - a second, older store from the v10 layout.
   $env:npm_config_store_dir = Join-Path $Caches 'pnpm\store'
+  # ...AND THE pnpm THAT RUNS MUST BE OURS.
+  #
+  # Measured 2026-09-22: the store path alone is not enough. The app's own
+  # `.appdata\bin\pnpm.cmd` shim prefers "a user-installed pnpm" over the bundled
+  # one, and the first `pnpm` on this machine's PATH belongs to a DIFFERENT
+  # product (`%APPDATA%\dsh-desktop\harness\.desktop-bin\pnpm.cmd`, pnpm 10.34.5).
+  # pnpm 10 appends `v10` to the store; these profiles were installed by pnpm
+  # 11.7.0 and record `v11`, so every marketplace update died with
+  # ERR_PNPM_UNEXPECTED_STORE and rolled the build back.
+  #   without the switch: 10.34.5 -> <caches>\pnpm\store\v10   (mismatch)
+  #   with the switch   : 11.7.0  -> <caches>\pnpm\store\v11   (matches)
+  # The bundled pnpm under `.appdata\dependencies\pnpm` IS 11.7.0, so prefer it:
+  # a self-contained install must not resolve toolchain from another product.
+  $env:DSH_PREFER_BUNDLED_PNPM = '1'
+  # Bare `pnpm` calls made by the app's children must hit our shim first, not
+  # whatever another product left ahead of us on PATH.
+  $appBin = Join-Path $AppDataR 'bin'
+  if (Test-Path -LiteralPath (Join-Path $appBin 'pnpm.cmd')) {
+    $rest = @($env:PATH -split ';' | Where-Object { $_ -and $_ -ne $appBin } | Select-Object -Unique)
+    $env:PATH = (@($appBin) + $rest) -join ';'
+  }
   $env:DSH_TELEMETRY_DISABLED = '1'
   # LOCALAPPDATA still matters even with DSH_APP_DATA, because not every writer
   # goes through the path authority. The WebView2 loader drops a zero-byte
@@ -452,6 +471,15 @@ function Set-EcoEnv {
   $rsiKey = Join-Path $Ws 'rsi\records\local-server.key'
   if (Test-Path -LiteralPath $rsiKey) {
     $env:LOCAL_MODEL_API_KEY = (Get-Content -LiteralPath $rsiKey -Raw).Trim()
+  }
+  # The RSI host plugins also need to know which install they belong to: the panel
+  # and the rsi_* tools resolve paths under RSI_ROOT, and the tools proxy to the
+  # controller named by RSI_PANEL_URL. Both point at this ecosystem's own port, so
+  # the live install on S: is never addressed by accident.
+  $rsiRoot = Join-Path $Ws 'rsi'
+  if (Test-Path -LiteralPath $rsiRoot) {
+    $env:RSI_ROOT      = $rsiRoot
+    $env:RSI_PANEL_URL = 'http://127.0.0.1:18803'
   }
 }
 
@@ -785,7 +813,62 @@ function Invoke-Migrate {
 }
 
 # ================================================================= LAUNCH ===
+# The in-UI "Memory & learning" panel is a client plugin (`@local/rsi-ui`): it
+# POSTs to the harness route `/local-rsi-api`, and the plugin's host half proxies
+# that to `http://127.0.0.1:18803/rsi/ui`. Nothing else in the ecosystem starts
+# that server, so without this the panel renders its chrome and every request
+# fails - which is exactly what "the panel is there but nothing works" means.
+#
+# `service.py --front-only` serves only that API, from local records + SQLite +
+# the filesystem. It deliberately does NOT call wake_model() or start the second
+# DeepSeek web UI, so it needs no GPU and cannot disturb another install's model.
+function Start-RsiFront {
+  $rsiRoot = Join-Path $Ws 'rsi'
+  $launcher = Join-Path $rsiRoot 'start-front.ps1'
+  if (-not (Test-Path -LiteralPath $launcher)) {
+    Write-Log 'RSI: rsi\start-front.ps1 not found; the Memory panel will have no data' 'WARN'
+    return
+  }
+  if (Get-NetTCPConnection -LocalPort 18803 -State Listen -ErrorAction SilentlyContinue) {
+    Write-Log 'RSI: panel API already listening on 18803'
+    return
+  }
+  New-Dir (Join-Path $rsiRoot 'records')
+  # Get-Command can answer with several matches (and under Set-StrictMode a bare
+  # `.Source` on that array throws), so take the first real application.
+  $psHost = $null
+  foreach ($name in @('pwsh', 'powershell.exe')) {
+    if ($psHost) { break }
+    $cmd = @(Get-Command $name -ErrorAction SilentlyContinue) | Select-Object -First 1
+    if ($cmd -and $cmd.Source) { $psHost = $cmd.Source }
+  }
+  if (-not $psHost) {
+    Write-Log 'RSI: no PowerShell host found; the Memory panel will have no data' 'WARN'
+    return
+  }
+  # Start-Process joins ArgumentList with spaces and does NOT quote elements, so
+  # the script path (this root contains a space) must be quoted here or the child
+  # sees `-File D:\KEEP` and dies with "does not have a '.ps1' extension".
+  Start-Process -FilePath $psHost -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',"`"$launcher`"") `
+    -WindowStyle Hidden `
+    -RedirectStandardOutput (Join-Path $rsiRoot 'records\rsi-front.stdout.log') `
+    -RedirectStandardError  (Join-Path $rsiRoot 'records\rsi-front.stderr.log') | Out-Null
+  for ($i = 0; $i -lt 30; $i++) {
+    Start-Sleep -Milliseconds 500
+    if (Get-NetTCPConnection -LocalPort 18803 -State Listen -ErrorAction SilentlyContinue) {
+      Write-Log 'RSI: panel API listening on 18803 (front-only; CUDA model left to the S: install)'
+      return
+    }
+  }
+  Write-Log 'RSI: panel API did not come up; see rsi\records\rsi-front.stderr.log' 'WARN'
+}
+
 function Invoke-Launch {
+  # Ensure the Memory panel's API first, whatever state the shell is in. A shell
+  # that is already running still needs a front (the panel would otherwise sit
+  # there empty until the next full relaunch), and this call is a no-op when
+  # 18803 is already served.
+  Start-RsiFront
   if (Get-AppProc) { Write-Log 'LAUNCH: the shell is already running; nothing to do'; return }
   $live = @(Get-HarnessProc)
   if ($live.Count -gt 0) {
