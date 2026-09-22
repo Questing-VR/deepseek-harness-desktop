@@ -59,12 +59,15 @@ pub fn run() {
                 if setting.installed {
                     service::workflow::stop_on_exit(app_handle);
                 }
-                // 已下载但用户没在应用内安装过更新 → 退出后自动打开安装器：
-                // 静默下载不打扰用户，代价是用户可能一直不主动升级，这里补上
-                // 「关闭应用即升级」这一步（安装器由系统默认处理器启动）。
-                // 必须在回收 Harness 之后：安装器交付前要先释放配置端口
-                //（见 workflow::stop_for_installer）。
-                service::update::launch_pending_installer(app_handle);
+                // AUTO-UPDATE IS OFF. This application is a hand-built, containerised
+                // fork: a stock installer launched here would silently replace the
+                // patched shell, and with it the single path authority that keeps
+                // every byte inside one folder. There is deliberately no
+                // `launch_pending_installer` call any more - it shipped a stock
+                // v0.15.8 installer over the patched build on exit, every time.
+                // Upgrades happen only by rebasing the fork and running
+                // `dsh-ecosystem.ps1 -Action Install`; see
+                // <root>\DSH-KAWAI-CONTAINMENT.md.
             }
             _ => {}
         });

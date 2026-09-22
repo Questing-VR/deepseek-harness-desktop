@@ -35,8 +35,15 @@ pub use about::{about, DesktopAboutInfo};
 pub use install::{check, download, open_installer, DesktopDownloadProgress, DesktopUpdateInfo};
 pub use pending::launch_pending_installer;
 
-/// 仓库主页（同时用于构造 atom / expanded_assets / 下载地址）
-const REPO_URL: &str = "https://github.com/hairyf/deepseek-harness-desktop";
+/// 仓库主页（同时用于构造 atom / expanded_assets / 下载地址）。
+///
+/// POINTS AT THIS FORK, NOT UPSTREAM. It used to be `hairyf/deepseek-harness-desktop`,
+/// which meant the update check compared against - and staged the installer of -
+/// the stock product. Running that installer replaces this binary with a build
+/// that has no single-path authority, so every customisation (the containerised
+/// data root above all) was silently destroyed and had to be rebuilt by hand.
+/// Updates must come from this fork and nowhere else.
+const REPO_URL: &str = "https://github.com/Questing-VR/deepseek-harness-desktop";
 /// 版权信息（与 tauri.conf.json bundle.copyright 保持一致）
 const COPYRIGHT: &str = "Copyright © 2026 Deepseek Harness Desktop contributors";
 /// About 对话框的 "Powered by" 文案
