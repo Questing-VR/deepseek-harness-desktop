@@ -16,7 +16,14 @@ import { Webview } from './components/webview'
 import '../i18n'
 
 /** 桌面端自更新轮询间隔：Rust 侧不缓存，改为低频轮询以免触发 GitHub 未认证限流（60 次/小时/IP） */
-const DESKTOP_UPDATE_POLL_INTERVAL = 10 * 60_000
+// 桌面端更新轮询：启动即检查一次，此后每天一次。
+//
+// Was every 10 minutes. The update source is this fork's own GitHub releases
+// (see service/update/mod.rs), so the check is cheap, but ten-minute polling of
+// GitHub adds nothing: releases are cut by hand. Once a day keeps the app
+// current without hammering the API, and the startup check covers the usual
+// "open the app, find out" case.
+const DESKTOP_UPDATE_POLL_INTERVAL = 24 * 60 * 60_000
 
 /** Rust 侧 on_download 接管下载后 emit 的完成事件载荷（与 desktop::payload 对齐） */
 interface DownloadFinishedPayload {
