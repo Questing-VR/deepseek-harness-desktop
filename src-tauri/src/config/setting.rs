@@ -231,16 +231,17 @@ fn resolve_store_dat_file(e2e: bool, debug: bool) -> &'static str {
 /// 启动最早期读取 `force_xwayland`，绕过 `tauri_plugin_store` 直接解析 store 文件。
 ///
 /// `GDK_BACKEND` 必须在 GTK 初始化之前设置，那时 `AppHandle` 尚不存在，插件的
-/// `StoreExt` 用不了。路径由 `logger::identifier_dir()` 与 `store_dat_file_name()` 拼出，
-/// 与插件的 `BaseDirectory::AppData` + 文件名解析一致，开发 / E2E / 生产三份 store
-/// 不互读。store 靠文件名区分 dev，目录不带 `dev/` 一层，与日志的做法不同。
-/// 文件缺失、JSON 非法、键缺失一律按关闭处理：此处早于 `logger::init()`，
-/// 无处告警，静默回落到默认行为比中断启动合适。
+/// `StoreExt` 用不了。路径由路径权威（`portable_root` / `platform_app_data_dir`）与
+/// `store_dat_file_name()` 拼出，与 `store_dat_path()` 用的是同一个根目录，因此
+/// 开发 / E2E / 生产三份 store 不互读。store 靠文件名区分 dev，目录不带 `dev/`
+/// 一层，与日志的做法不同。文件缺失、JSON 非法、键缺失一律按关闭处理：此处早于
+/// `logger::init()`，无处告警，静默回落到默认行为比中断启动合适。
 ///
 /// `migrate_app_data_dir` 在 builder 的 setup 阶段才执行，晚于这里。从旧标识符升级
 /// 上来的用户，升级后的首次启动读不到设置，该次不强制，迁移完成后下次启动恢复。
 pub fn force_xwayland_setting() -> bool {
-    crate::logger::identifier_dir()
+    crate::config::portable_root()
+        .or_else(crate::config::platform_app_data_dir)
         .map(|dir| dir.join(store_dat_file_name()))
         .and_then(|path| std::fs::read_to_string(path).ok())
         .is_some_and(|raw| force_xwayland_in_store_json(&raw))

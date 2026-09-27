@@ -7,6 +7,7 @@
 //! - 轮转：`desktop.log` + `desktop.frontdesk.log` 各 5MiB，保留 `.1 ~ .3`
 //! - 降噪：`reqwest`/`hyper` 默认 `warn`，可通过 `RUST_LOG=reqwest=debug` 覆盖
 
+use crate::config;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -18,78 +19,26 @@ use tracing_subscriber::fmt::time::OffsetTime;
 use tracing_subscriber::layer::{Layer, SubscriberExt};
 use tracing_subscriber::{fmt, util::SubscriberInitExt, EnvFilter};
 
-use crate::config::{APP_DATA_DEV_DIR_NAME, APP_IDENTIFIER};
-
-const LOG_FILE_NAME: &str = "desktop.log";
-const FRONTDESK_LOG_FILE_NAME: &str = "desktop.frontdesk.log";
-const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
-const MAX_BACKUPS: usize = 3;
-
-static FILE_GUARD: OnceLock<WorkerGuard> = OnceLock::new();
-static FRONTDESK_WRITER: OnceLock<Arc<Mutex<SizeRotatingWriter>>> = OnceLock::new();
-
-/// 平台应用数据根目录下的本应用目录（`identifier` 一层；dev 与 release 相同）。
+/// 后端日志文件路径（`<root>/logs/desktop.log`）。
 ///
-/// 仅用 `std::env` 解析，不依赖 `AppHandle`，因此也是启动前读取 store 的路径来源
-/// （`config::force_xwayland_setting`）。
-pub(crate) fn identifier_dir() -> Option<PathBuf> {
-    #[cfg(target_os = "windows")]
-    {
-        let appdata = std::env::var("APPDATA").ok()?;
-        return Some(PathBuf::from(appdata).join(APP_IDENTIFIER));
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let home = std::env::var("HOME").ok()?;
-        return Some(
-            PathBuf::from(home)
-                .join("Library")
-                .join("Application Support")
-                .join(APP_IDENTIFIER),
-        );
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        let base = std::env::var("XDG_DATA_HOME")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var("HOME")
-                    .ok()
-                    .map(|h| PathBuf::from(h).join(".local/share"))
-            })?;
-        return Some(base.join(APP_IDENTIFIER));
-    }
-    #[allow(unreachable_code)]
-    None
-}
-
-/// debug 构建在 `identifier` 目录下多一层 `dev/`，与 `config::get_base_dir` 同口径。
-fn apply_dev_segment(base: PathBuf) -> PathBuf {
-    if cfg!(debug_assertions) {
-        base.join(APP_DATA_DEV_DIR_NAME)
-    } else {
-        base
-    }
-}
-
-/// 本进程写日志用的应用数据目录。
-///
-/// dev 与 release 共用同一个 `identifier`（`dsh-tauri`），不隔离就会让两个本可同时
-/// 运行的进程打开同一个 `desktop.log`：日志互相交错，5 MiB 轮转的归档 rename 还会
-/// 彼此抢（一方 rename 完，另一方仍按旧长度 append）。核心安装目录、运行时与 Store
-/// 都已按 `dev/` 隔离，日志必须同口径。
-fn app_data_dir() -> Option<PathBuf> {
-    identifier_dir().map(apply_dev_segment)
-}
-
+/// 此前本模块自带一份 `app_data_dir()`，直接读 `APPDATA` / `HOME` / `XDG_DATA_HOME`
+/// 推导数据目录，于是产生了**第二个、与权威不一致的**数据目录概念：`config::get_base_dir()`
+/// 走的是 Tauri `app_data_dir()` / Win32 known-folder API（忽略这些环境变量），一旦
+/// `APPDATA` 被重定向，日志落到新位置而部署核心、`.store.dat` 仍留在旧位置，同一份
+/// 应用数据被劈成两处。故这里只经路径权威解析；刻意不引入 `AppHandle`——日志底座在
+/// `AppHandle` 建立之前就要定路径，`logs_dir_without_handle()` 正是为此而设。
 fn log_file_path() -> Option<PathBuf> {
-    Some(app_data_dir()?.join("logs").join(LOG_FILE_NAME))
+    let dir = config::logs_dir_without_handle()?;
+    // 目录惰性创建，且失败只忽略：日志绝不能阻碍启动。
+    let _ = config::ensure_dir(&dir);
+    Some(dir.join(LOG_FILE_NAME))
 }
 
+/// 前端日志文件路径（`<root>/logs/desktop.frontdesk.log`），与后端日志同源同目录。
 fn frontdesk_log_file_path() -> Option<PathBuf> {
-    Some(app_data_dir()?.join("logs").join(FRONTDESK_LOG_FILE_NAME))
+    let dir = config::logs_dir_without_handle()?;
+    let _ = config::ensure_dir(&dir);
+    Some(dir.join(FRONTDESK_LOG_FILE_NAME))
 }
 
 fn backup_path(base: &Path, n: usize) -> PathBuf {
@@ -429,17 +378,6 @@ pub fn log_frontend(level: FrontendLevel, target: &str, message: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    #[allow(clippy::assertions_on_constants)]
-    fn debug_logs_are_separated_from_release() {
-        // dev 与 release 共用 identifier；不隔离会让两个进程写同一个 desktop.log。
-        assert!(cfg!(debug_assertions), "cargo test 构建为 debug");
-        let base = PathBuf::from("/tmp/dsh-tauri");
-        assert_eq!(
-            apply_dev_segment(base.clone()),
-            base.join(APP_DATA_DEV_DIR_NAME)
-        );
-    }
     #[test]
     fn backup_path_naming() {
         let base = PathBuf::from("/tmp/desktop.log");
