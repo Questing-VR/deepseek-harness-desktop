@@ -62,12 +62,15 @@ pub const DSH_HOME_DEV_DIR_NAME: &str = ".dsh.dev";
 
 /// 应用标识符：`app_data_dir()` / `app_local_data_dir()` 的目录名，必须与
 /// `tauri.conf.json` 的 `identifier` 逐字一致（日志目录同样由它派生）。
-pub const APP_IDENTIFIER: &str = "dsh-tauri";
+///
+/// 本 fork 有意**保留**上游已弃用的旧标识符：containment 把全部数据钉在
+/// `<root>\.appdata` 之下，而该目录树、已装的依赖与用户 Store 都是以这个标识符
+/// 落盘的。跟随上游改成 `dsh-tauri` 会让现有安装整体换目录，等同重装。
+pub const APP_IDENTIFIER: &str = "io.github.hairyf.deepseek-harness-desktop";
 
-/// 历史应用标识符（`io.github.hairyf.deepseek-harness-desktop`）：标识符缩短为
-/// `dsh-tauri` 后旧用户的 app-data 目录名，仅用于迁移来源识别（见
-/// `service::migrate::migrate_app_data_dir`）。
-pub const LEGACY_APP_IDENTIFIER: &str = "io.github.hairyf.deepseek-harness-desktop";
+/// 上游当前的标识符（`dsh-tauri`）。仅用于识别「用户此前装的是上游版本」这一
+/// 迁移来源；本 fork 不采用它作为自身标识符（见 `APP_IDENTIFIER`）。
+pub const LEGACY_APP_IDENTIFIER: &str = "dsh-tauri";
 
 /// 开发构建在 AppData 下使用的独立子目录。Node、Harness、pnpm、Git 等可执行
 /// 核心不应与 release 共用，否则开发版更新/切换核心会替换正在运行的生产文件。

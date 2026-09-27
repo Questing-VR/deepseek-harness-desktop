@@ -19,6 +19,14 @@ use tracing_subscriber::fmt::time::OffsetTime;
 use tracing_subscriber::layer::{Layer, SubscriberExt};
 use tracing_subscriber::{fmt, util::SubscriberInitExt, EnvFilter};
 
+const LOG_FILE_NAME: &str = "desktop.log";
+const FRONTDESK_LOG_FILE_NAME: &str = "desktop.frontdesk.log";
+const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
+const MAX_BACKUPS: usize = 3;
+
+static FILE_GUARD: OnceLock<WorkerGuard> = OnceLock::new();
+static FRONTDESK_WRITER: OnceLock<Arc<Mutex<SizeRotatingWriter>>> = OnceLock::new();
+
 /// 后端日志文件路径（`<root>/logs/desktop.log`）。
 ///
 /// 此前本模块自带一份 `app_data_dir()`，直接读 `APPDATA` / `HOME` / `XDG_DATA_HOME`

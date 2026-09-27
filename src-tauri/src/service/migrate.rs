@@ -23,7 +23,7 @@
 use crate::config;
 use std::fs;
 use std::path::{Path, PathBuf};
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 /// 旧版（<0.x 迁移版）$DSH_HOME 位置：AppData 下的 `data/dsh`。
 fn legacy_dsh_home(app_handle: &AppHandle) -> PathBuf {
@@ -87,6 +87,12 @@ fn legacy_app_data_dir(target: &Path) -> Option<PathBuf> {
         .map(|parent| parent.join(config::LEGACY_APP_IDENTIFIER))
 }
 
+/// 上游把应用标识符从 `io.github.hairyf.deepseek-harness-desktop` 缩短为
+/// `dsh-tauri` 时，附带了「把旧标识符目录搬进新目录」的迁移。本 fork **保留**了
+/// 旧标识符，因此那个迁移在本 fork 中永远不适用；置为 `false` 使其显式失效，
+/// 而不是依赖 `legacy.exists()` 的偶然判断。
+const UPSTREAM_IDENTIFIER_RENAME_APPLIES: bool = false;
+
 /// 启动最早期调用：把旧标识符的 app-data 目录整体搬到新标识符目录。
 ///
 /// 标识符从 `io.github.hairyf.deepseek-harness-desktop` 缩短为 `dsh-tauri` 后，
@@ -97,6 +103,19 @@ fn legacy_app_data_dir(target: &Path) -> Option<PathBuf> {
 /// 判定首装，晚于搬移会把升级用户误判成全新安装（弹引导页 + 回落默认档案）。
 /// 失败只告警不阻断，旧数据原地保留，下次启动重试。
 pub fn migrate_app_data_dir(app_handle: &AppHandle) -> Result<(), String> {
+    // 本 fork 不采用上游的标识符改名（见 `config::APP_IDENTIFIER` 的说明）：
+    // `APP_IDENTIFIER` 仍是 `io.github.hairyf.deepseek-harness-desktop`，与
+    // `tauri.conf.json` 一致，因此不存在「旧标识符目录」需要搬移。
+    //
+    // 这里**必须**直接返回：上游该函数的语义是「把 LEGACY_APP_IDENTIFIER 目录搬进
+    // 新标识符目录」。在本 fork 里 LEGACY 指向的是**上游**的 `dsh-tauri` 目录，
+    // 照搬会把一份 stock 安装的数据（含它自己的 .store.dat 与依赖）拖进 contain
+    // 后的根目录，正好与 containment 的目标相反。
+    if !UPSTREAM_IDENTIFIER_RENAME_APPLIES {
+        log::debug!("app data dir migration is not applicable in this fork");
+        return Ok(());
+    }
+
     // debug 构建与 E2E 运行都不搬移：app-data 根目录同时承载生产的 `.store.dat`
     //（E2E 的 `.store.test.dat` 也在同一目录），开发/测试运行不得搬动它——与
     // `migrate()` 同理。E2E 还可能在 release 二进制上跑（门控只看
@@ -107,10 +126,7 @@ pub fn migrate_app_data_dir(app_handle: &AppHandle) -> Result<(), String> {
         return Ok(());
     }
 
-    let target = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("resolve app data dir failed: {e}"))?;
+    let target = config::get_base_dir(app_handle);
     let Some(legacy) = legacy_app_data_dir(&target) else {
         return Ok(());
     };

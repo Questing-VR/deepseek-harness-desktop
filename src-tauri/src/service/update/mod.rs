@@ -33,6 +33,9 @@ pub use about::{about, DesktopAboutInfo};
 // DesktopDownloadProgress 为对外公开的事件载荷类型（当前链路未直接引用，属有意保留）。
 #[allow(unused_imports)]
 pub use install::{check, download, open_installer, DesktopDownloadProgress, DesktopUpdateInfo};
+// `launch_pending_installer` 有意不再被退出路径调用（见本文件关于本 fork 的说明）：
+// 保留导出以便上游代码与测试继续引用，但不参与启动流程。
+#[allow(unused_imports)]
 pub use pending::launch_pending_installer;
 
 /// 仓库主页（同时用于构造 atom / expanded_assets / 下载地址）。
