@@ -169,15 +169,20 @@ function ConfirmDialog(props: ConfirmDialogProps) {
 
 ## 5. 后端与 Rust 规范 (Backend Rules)
 
-1. **注释要求**：仅使用中文注释。模块头用 `//!`，函数说明用 `///`（侧重阐述原因）。
-2. **错误处理**：`Result<_, String>` 的错误信息必须包含大写前缀（如 `NODE_NOT_FOUND: ...`）。
-3. **Windows 适配**：
-* 子进程启动必须使用 `CREATE_NO_WINDOW (0x08000000)`。
-* 停止服务时使用 `taskkill /T /F` 杀掉进程树，防止 DLL 锁死。
-* 更新 PATH 后需广播 `WM_SETTINGCHANGE`。
+1. **Comments**: Chinese only; `//!` for module headers, `///` for functions (focus on "why").
+2. **Errors/Logs**: `Result<_, String>` errors need an uppercase prefix (e.g. `NODE_NOT_FOUND: ...`); log key paths.
+3. **Settings**: new `Setting` fields need `#[serde(default...)]` and export in `config/mod.rs`.
+4. **Windows**:
+   - Spawn children with `CREATE_NO_WINDOW (0x08000000)`.
+   - Kill the process tree when stopping services (`taskkill /T /F`) to avoid DLL lock on update.
+   - Broadcast `WM_SETTINGCHANGE` after writing PATH; tell users to reopen terminals.
+5. **CLI shim (`service/cli`)**:
+   - Scripts at Win `%LOCALAPPDATA%\deepseek-harness\bin`, Unix `~/.local/bin`；**可移植模式**（设置了非空 `DSH_APP_DATA`）下改为 `<root>/bin`——该模式的承诺是「用户指定的目录里什么都有」，shim 不能例外。
+   - Prefer local Node (v22.19+ / v24+; v23 unsupported), fallback to bundled Node; mind escaping (`%`→`%%`, `'`→`'\''`).
+   - Shim text must be English-only (cmd/ps1 parse by code page, Chinese breaks).
+   - pnpm shim: forward user-installed pnpm first, else bundled node `dependencies/pnpm/bin/pnpm.cjs`.
+   - Install skips when bundled installed **or** user pnpm on PATH (`Pnpm::check_installed`).
+6. **Cross-platform/Tests**: Unix-only code gets `#[cfg_attr(windows, allow(dead_code))]`; unit tests in `#[cfg(test)] mod tests`, skip gracefully when restricted.
+7. **Deps/Docs**: no heavy deps, prefer existing `windows-sys`; README minimal, en/zh synced.
 
 
-4. **CLI Shim (`service/cli`)**：
-* 脚本存放路径：Win `%LOCALAPPDATA%\deepseek-harness\bin`，Unix `~/.local/bin`。
-* 优先使用本地 Node (v22.19+ / v24+，不支持 v23)，回退到捆绑 Node。
-* Shim 文本**必须全英文**，避免编码页乱码。
